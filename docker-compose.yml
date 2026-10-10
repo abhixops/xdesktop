@@ -7,7 +7,7 @@ services:
       dockerfile: Dockerfile
       args:
         USERNAME: ${USERNAME:-abhishek}
-    image: asabhi6776/xdesktop:latest
+    image: ghcr.io/abhixops/xdesktop:latest
     shm_size: "1gb"
     environment:
       - VNC_PW=${VNC_PW:-vncpassword}
