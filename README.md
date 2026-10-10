@@ -29,7 +29,7 @@ Configure your container via `.env` or Docker Compose environment variables:
 
 | Variable | Default | Description |
 |---|---|---|
-| `USERNAME` | `abhishek` | Non-root Linux user account |
+| `USERNAME` | `xdesktop` | Non-root Linux user account |
 | `VNC_PW` | `vncpassword` | Password for VNC connection |
 | `RESOLUTION` | `1920x1080` | Virtual display screen resolution |
 | `VNC_DEPTH` | `24` | Screen color bit depth |
