@@ -5,7 +5,7 @@ LABEL maintainer="github.com/abhixops"
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Build arguments for customizable non-root user
-ARG USERNAME=abhishek
+ARG USERNAME=xdesktop
 ARG USER_UID=1000
 ARG USER_GID=1000
 
