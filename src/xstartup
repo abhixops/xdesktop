@@ -1,0 +1,15 @@
+#!/bin/bash
+unset SESSION_MANAGER
+unset DBUS_SESSION_BUS_ADDRESS
+
+# Disable screensaver and power management signaling to avoid lockups inside VDI
+xset s off 2>/dev/null || true
+xset -dpms 2>/dev/null || true
+
+# Load user X resources if present
+if [ -f "$HOME/.Xresources" ]; then
+    xrdb "$HOME/.Xresources"
+fi
+
+# Start XFCE4 desktop environment
+exec startxfce4

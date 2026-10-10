@@ -1,14 +1,22 @@
-version: '3'
 services:
   vdi:
     container_name: vdi_app
-    restart: always
-    privileged: true
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        USERNAME: ${USERNAME:-abhishek}
     image: asabhi6776/xdesktop:latest
+    shm_size: "1gb"
+    environment:
+      - VNC_PW=${VNC_PW:-vncpassword}
+      - RESOLUTION=${RESOLUTION:-1920x1080}
+      - VNC_DEPTH=${VNC_DEPTH:-24}
     ports:
-      - 5901:5901
-      - 6080:6080
+      - "5901:5901"
+      - "6080:6080"
     volumes:
-      - ./projects:/home/abhishek/Desktop/projects
+      - ./projects:/home/${USERNAME:-abhishek}/Desktop/projects
     mem_limit: "4g"
     cpus: 2
