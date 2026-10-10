@@ -71,10 +71,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Custom desktop wallpaper
 COPY assets/bg-l2.png /usr/share/backgrounds/xfce/xfce-custom.png
-
-RUN xfconf-query -c xfce4-desktop \
-    -p /backdrop/screen0/monitor0/workspace0/last-image \
-    -s "/usr/share/backgrounds/xfce/xfce-custom.png"
+RUN ln -sf /usr/share/backgrounds/xfce/xfce-custom.png /usr/share/backgrounds/xfce/xfce-verticals.png \
+    && ln -sf /usr/share/backgrounds/xfce/xfce-custom.png /usr/share/backgrounds/xfce/xfce-stripes.png \
+    && ln -sf /usr/share/backgrounds/xfce/xfce-custom.png /usr/share/backgrounds/xfce/xfce-blue.jpg \
+    && ln -sf /usr/share/backgrounds/xfce/xfce-custom.png /usr/share/backgrounds/xfce/xfce-teal.jpg
 
 # Create non-root user and grant passwordless sudo privileges securely
 # Ubuntu 24.04 includes a default 'ubuntu' user with UID/GID 1000; remove/replace if needed

@@ -11,5 +11,13 @@ if [ -f "$HOME/.Xresources" ]; then
     xrdb "$HOME/.Xresources"
 fi
 
+# Apply custom wallpaper at runtime once XFCE and D-Bus have initialized
+(
+    sleep 3
+    for mon in monitor0 monitorVNC-0 monitorVirtual-1 monitorVirtual1; do
+        xfconf-query -c xfce4-desktop -p "/backdrop/screen0/${mon}/workspace0/last-image" -s "/usr/share/backgrounds/xfce/xfce-custom.png" 2>/dev/null || true
+    done
+) &
+
 # Start XFCE4 desktop environment
 exec startxfce4
