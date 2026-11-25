@@ -1,0 +1,17 @@
+# Expose the raw VNC port (5901) for native VNC clients (TigerVNC viewer,
+# Remmina, macOS Screen Sharing, ...).
+#
+# WARNING: the raw VNC protocol is NOT encrypted and VncAuth only uses the
+# first 8 characters of the password. Keep XDESKTOP_BIND=127.0.0.1 and use an
+# SSH tunnel or VPN to reach it remotely. Never publish 5901 to the internet.
+#
+# Usage (from the repo root):
+#   docker compose -f docker-compose.yml -f examples/raw-vnc/compose.override.yml up -d
+
+services:
+  xdesktop:
+    environment:
+      VNC_LISTEN: all
+    ports:
+      # VNC port inside the container is 5900 + DISPLAY_NUM (5901 by default).
+      - "${XDESKTOP_BIND:-127.0.0.1}:${VNC_HOST_PORT:-5901}:5901"

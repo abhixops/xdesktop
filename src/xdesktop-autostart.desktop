@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=xdesktop session hooks
+Comment=Runs ~/.xdesktop/autostart.sh after the desktop starts
+Exec=/usr/local/lib/xdesktop/session-autostart
+NoDisplay=true
+X-XFCE-Autostart-Override=true

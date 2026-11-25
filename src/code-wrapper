@@ -1,0 +1,6 @@
+#!/bin/sh
+# VS Code launcher (/usr/local/bin/code, ahead of /usr/bin/code on PATH).
+# Chromium's sandbox needs user namespaces or a setuid helper, neither of which
+# works in an unprivileged container, so it is disabled here instead of by
+# patching files owned by the `code` package (which upgrades would undo).
+exec /usr/bin/code --no-sandbox "$@"

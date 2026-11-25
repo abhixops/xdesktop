@@ -1,0 +1,186 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches-ignore:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: xdesktop:ci
+
+jobs:
+  lint:
+    name: Lint (hadolint, shellcheck, actionlint)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: hadolint
+        uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387 # v3.5.0
+        with:
+          dockerfile: Dockerfile
+
+      - name: shellcheck
+        run: |
+          set -euo pipefail
+          files=()
+          while IFS= read -r f; do
+            case "$f" in
+              *.sh) files+=("$f") ;;
+              *) head -n1 "$f" | grep -Eq '^#!.*\b(ba|da)?sh\b' && files+=("$f") ;;
+            esac
+          done < <(find src -maxdepth 1 -type f \( -name '*.sh' -o ! -name '*.*' \) | sort)
+          printf 'Checking: %s\n' "${files[@]}"
+          shellcheck --version
+          shellcheck --severity=warning --external-sources "${files[@]}"
+
+      - name: actionlint
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo \
+            rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color
+
+  build-smoke:
+    name: Build and smoke test (amd64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build image
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ${{ env.IMAGE }}
+          cache-from: type=gha,scope=linux-amd64
+          cache-to: type=gha,scope=linux-amd64,mode=max
+
+      - name: Start container
+        run: |
+          mkdir -p "${RUNNER_TEMP}/smoke"
+          docker run -d --name xd -e VNC_PW=ci-test1 -e VNC_LISTEN=all \
+            -p 6080:6080 -p 5901:5901 --shm-size=1g "$IMAGE"
+
+      - name: Wait for healthy
+        run: |
+          deadline=$((SECONDS + 180))
+          while :; do
+            status=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' xd)
+            running=$(docker inspect -f '{{.State.Running}}' xd)
+            echo "running=$running health=$status"
+            [ "$status" = healthy ] && break
+            if [ "$running" != true ] || [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::error::Container did not become healthy (running=$running health=$status)"
+              docker inspect -f '{{json .State.Health}}' xd || true
+              docker logs xd || true
+              exit 1
+            fi
+            sleep 5
+          done
+
+      - name: noVNC answers over HTTPS
+        run: curl -kfsS --retry 5 --retry-delay 2 --max-time 15 https://localhost:6080/vnc.html -o /dev/null
+
+      - name: Plain HTTP is refused (NOVNC_SSL_ONLY=true)
+        run: |
+          if curl -fsS --max-time 10 http://localhost:6080/vnc.html -o /dev/null; then
+            echo "::error::noVNC served plain HTTP although SSL-only is the default"
+            exit 1
+          fi
+          echo "Plain HTTP correctly rejected"
+
+      - name: VNC screenshot
+        run: |
+          python3 -m venv "${RUNNER_TEMP}/venv"
+          "${RUNNER_TEMP}/venv/bin/pip" install --quiet vncdotool==1.4.2
+          sleep 10  # let XFCE finish drawing
+          timeout 90 "${RUNNER_TEMP}/venv/bin/vncdo" -s localhost::5901 -p ci-test1 \
+            capture "${RUNNER_TEMP}/smoke/screenshot.png"
+          test -s "${RUNNER_TEMP}/smoke/screenshot.png"
+
+      - name: Collect logs
+        if: always()
+        run: |
+          mkdir -p "${RUNNER_TEMP}/smoke"
+          docker logs xd > "${RUNNER_TEMP}/smoke/container.log" 2>&1 || true
+          docker inspect xd > "${RUNNER_TEMP}/smoke/inspect.json" 2>&1 || true
+          docker cp xd:/home/xdesktop/.xdesktop/logs "${RUNNER_TEMP}/smoke/xdesktop-logs" 2>/dev/null || true
+
+      - name: Upload smoke-test artifacts
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: smoke-test
+          path: ${{ runner.temp }}/smoke
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Trivy scan (CRITICAL,HIGH; non-blocking)
+        if: always() && steps.build.outcome == 'success'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          limit-severities-for-sarif: true
+          exit-code: '0'
+
+      - name: Upload Trivy SARIF artifact
+        if: always() && hashFiles('trivy-results.sarif') != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: trivy-sarif
+          path: trivy-results.sarif
+          retention-days: 7
+
+  trivy-upload:
+    name: Upload Trivy results to code scanning
+    runs-on: ubuntu-24.04
+    needs: [build-smoke]
+    # Fork PRs get a read-only token; SARIF upload would fail there.
+    if: |
+      always() &&
+      (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository)
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    steps:
+      - name: Download SARIF
+        id: dl
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: trivy-sarif
+
+      - name: Upload SARIF
+        if: steps.dl.outcome == 'success'
+        uses: github/codeql-action/upload-sarif@915412ff23e8b7659517e607487dbeae018f2934 # v4.39.5
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-image

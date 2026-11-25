@@ -1,0 +1,8 @@
+// VS Code runtime arguments (seeded into new homes by xdesktop).
+// Note: this alone does not stop the main-process sandbox from aborting in an
+// unprivileged container; /usr/local/bin/code and the menu entries pass
+// --no-sandbox. This keeps the renderer side consistent and avoids keyring prompts.
+{
+	"disable-chromium-sandbox": true,
+	"password-store": "basic"
+}

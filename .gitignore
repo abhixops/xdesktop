@@ -1,12 +1,26 @@
-# Calabash / Cucumber
-rerun/
-reports/
+# Local configuration (contains secrets)
+.env
+.env.*
+
+# Workspace bind mount
+projects/
+
+# Screenshots / scratch output
 screenshots/
 screenshot*.png
-test-servers/
+shot*.png
+*.log
+tmp/
 
-# bundler
-.bundle
-vendor
+# Custom TLS certificates
+certs/
+*.pem
+*.key
 
-projects
+# Caddy example runtime data
+examples/caddy/.env
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
