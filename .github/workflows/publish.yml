@@ -11,164 +11,318 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag version to build and publish (e.g. v1.0.0)'
+        description: 'Existing tag to (re)build and publish, e.g. v1.0.0. Empty = highest existing semver tag.'
         required: false
         default: ''
 
-permissions:
-  contents: write
-  packages: write
+# Least privilege by default; each job opts in to what it needs.
+permissions: {}
+
+# Releases are never cancelled mid-flight; runs for the same ref are serialised.
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   auto-tag:
     name: Determine and Create Tag
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: github.event_name == 'pull_request' && github.event.pull_request.merged == true
+    permissions:
+      contents: write
     outputs:
       new_tag: ${{ steps.calculate_tag.outputs.new_tag }}
       should_publish: ${{ steps.calculate_tag.outputs.should_publish }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Checkout merge commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Parse PR prefix and calculate SemVer
+      - name: Parse PR prefix, calculate SemVer and push tag
         id: calculate_tag
+        env:
+          # Untrusted input: only ever used as a quoted shell variable.
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
         run: |
-          PR_TITLE="${{ github.event.pull_request.title }}"
-          echo "PR Title: $PR_TITLE"
+          set -euo pipefail
+          printf 'PR Title: %s\n' "$PR_TITLE"
 
+          # Major -> release:, Minor -> feat:, Patch -> fix:
           BUMP=""
-          # 1.1.1 principle:
-          # First number (Major) -> release:
-          # Second number (Minor) -> feat:
-          # Third number (Patch) -> fix:
-          if echo "$PR_TITLE" | grep -Ei '^(release)(\(.*\))?:' >/dev/null; then
+          if printf '%s' "$PR_TITLE" | grep -Eiq '^release(\(.*\))?!?:'; then
             BUMP="major"
-          elif echo "$PR_TITLE" | grep -Ei '^(feat)(\(.*\))?:' >/dev/null; then
+          elif printf '%s' "$PR_TITLE" | grep -Eiq '^feat(\(.*\))?!?:'; then
             BUMP="minor"
-          elif echo "$PR_TITLE" | grep -Ei '^(fix)(\(.*\))?:' >/dev/null; then
+          elif printf '%s' "$PR_TITLE" | grep -Eiq '^fix(\(.*\))?!?:'; then
             BUMP="patch"
           fi
 
           if [ -z "$BUMP" ]; then
-            echo "No matching prefix (release:, feat:, fix:) found in PR title. Skipping tag creation."
+            echo "No matching prefix (release:, feat:, fix:) in PR title. Skipping tag creation."
             echo "should_publish=false" >> "$GITHUB_OUTPUT"
             echo "new_tag=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          echo "Bump type: $BUMP"
 
-          echo "Determined bump type: $BUMP"
-
-          # Fetch all tags from origin
-          git fetch --tags --force
-
-          # Find latest semantic version tag
-          LATEST_TAG=$(git tag -l "v*.*.*" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
-
-          if [ -z "$LATEST_TAG" ]; then
-            echo "No existing semantic tags found. Starting from 0.0.0 baseline."
-            MAJOR=0
-            MINOR=0
-            PATCH=0
-          else
-            echo "Found existing latest tag: $LATEST_TAG"
-            CLEAN_TAG="${LATEST_TAG#v}"
-            MAJOR=$(echo "$CLEAN_TAG" | cut -d. -f1)
-            MINOR=$(echo "$CLEAN_TAG" | cut -d. -f2)
-            PATCH=$(echo "$CLEAN_TAG" | cut -d. -f3)
-          fi
-
-          case "$BUMP" in
-            major)
-              NEW_MAJOR=$((MAJOR + 1))
-              NEW_MINOR=0
-              NEW_PATCH=0
-              ;;
-            minor)
-              NEW_MAJOR=$MAJOR
-              NEW_MINOR=$((MINOR + 1))
-              NEW_PATCH=0
-              ;;
-            patch)
-              NEW_MAJOR=$MAJOR
-              NEW_MINOR=$MINOR
-              NEW_PATCH=$((PATCH + 1))
-              ;;
-          esac
-
-          NEW_TAG="v${NEW_MAJOR}.${NEW_MINOR}.${NEW_PATCH}"
-          echo "Calculated new tag: $NEW_TAG"
-
-          # Configure git and push tag
           git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "$NEW_TAG" -m "Automated release $NEW_TAG from merged PR [skip ci]"
-          git push origin "$NEW_TAG"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          echo "new_tag=$NEW_TAG" >> "$GITHUB_OUTPUT"
-          echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          # Retry in case another merged PR pushed a tag concurrently.
+          for attempt in 1 2 3; do
+            git fetch --tags --force --quiet origin
+            LATEST_TAG=$(git tag -l 'v*.*.*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)
+            if [ -z "$LATEST_TAG" ]; then
+              MAJOR=0; MINOR=0; PATCH=0
+            else
+              IFS=. read -r MAJOR MINOR PATCH <<< "${LATEST_TAG#v}"
+            fi
+            case "$BUMP" in
+              major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+              minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+              patch) PATCH=$((PATCH + 1)) ;;
+            esac
+            NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+            echo "Attempt $attempt: latest=${LATEST_TAG:-none} new=$NEW_TAG"
 
-  build-and-publish:
-    name: Build & Push Multi-Arch Docker Image to GHCR
-    runs-on: ubuntu-latest
+            git tag -a "$NEW_TAG" "$MERGE_SHA" -m "Automated release $NEW_TAG"
+            if git push origin "refs/tags/$NEW_TAG"; then
+              echo "new_tag=$NEW_TAG" >> "$GITHUB_OUTPUT"
+              echo "should_publish=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            git tag -d "$NEW_TAG"
+            sleep $((attempt * 5))
+          done
+          echo "::error::Failed to push a new tag after 3 attempts"
+          exit 1
+
+  prepare:
+    name: Resolve version and tags
+    runs-on: ubuntu-24.04
     needs: [auto-tag]
     if: |
       always() &&
       (
         (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
         (github.event_name == 'pull_request' && needs.auto-tag.outputs.should_publish == 'true') ||
-        (github.event_name == 'workflow_dispatch')
+        github.event_name == 'workflow_dispatch'
       )
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      ref: ${{ steps.resolve.outputs.ref }}
+      is_latest: ${{ steps.resolve.outputs.is_latest }}
+      image: ${{ steps.resolve.outputs.image }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Resolve target image tag
-        id: resolve_tag
+      - name: Resolve version, ref and latest flag
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          # Untrusted input (dispatch): validated below before use.
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          AUTO_TAG: ${{ needs.auto-tag.outputs.new_tag }}
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            TAG="${{ needs.auto-tag.outputs.new_tag }}"
-          elif [ "${{ github.event_name }}" = "push" ]; then
-            TAG="${GITHUB_REF#refs/tags/}"
-          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.tag }}" ]; then
-            TAG="${{ github.event.inputs.tag }}"
-          else
-            TAG="latest"
-          fi
-          echo "Resolved Tag: $TAG"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          SEMVER_RE='^v[0-9]+\.[0-9]+\.[0-9]+$'
 
-      - name: Set up QEMU for multi-architecture emulation
-        uses: docker/setup-qemu-action@v3
+          mapfile -t TAGS < <(gh api --paginate "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/v" --jq '.[].ref' \
+            | sed 's#^refs/tags/##' | grep -E "$SEMVER_RE" | sort -V || true)
+          HIGHEST="${TAGS[${#TAGS[@]}-1]:-}"
+
+          case "$EVENT_NAME" in
+            pull_request) VERSION="$AUTO_TAG" ;;
+            push)         VERSION="$GITHUB_REF_NAME" ;;
+            workflow_dispatch)
+              if [ -n "$INPUT_TAG" ]; then
+                VERSION="$INPUT_TAG"
+              else
+                VERSION="$HIGHEST"
+                echo "No tag given; using highest existing tag: ${VERSION:-<none>}"
+              fi
+              ;;
+            *) echo "::error::Unsupported event"; exit 1 ;;
+          esac
+
+          if ! [[ "$VERSION" =~ $SEMVER_RE ]]; then
+            echo "::error::Version must match vMAJOR.MINOR.PATCH"
+            exit 1
+          fi
+          if ! printf '%s\n' "${TAGS[@]}" | grep -Fxq "$VERSION"; then
+            echo "::error::Tag $VERSION does not exist in the repository"
+            exit 1
+          fi
+
+          IS_LATEST=false
+          [ "$VERSION" = "$HIGHEST" ] && IS_LATEST=true
+
+          {
+            echo "version=$VERSION"
+            echo "ref=refs/tags/$VERSION"
+            echo "is_latest=$IS_LATEST"
+            echo "image=ghcr.io/${GITHUB_REPOSITORY,,}"
+          } >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION highest=$HIGHEST is_latest=$IS_LATEST"
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: [prepare]
+    if: always() && needs.prepare.result == 'success'
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Prepare platform pair
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: echo "PLATFORM_PAIR=${PLATFORM//\//-}" >> "$GITHUB_ENV"
+
+      - name: Checkout release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+          persist-credentials: false
+
+      - name: Docker metadata (labels)
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ needs.prepare.outputs.image }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ needs.prepare.outputs.version }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
-      - name: Log in to GitHub Container Registry (GHCR)
-        uses: docker/login-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract Docker metadata and tags
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=raw,value=${{ steps.resolve_tag.outputs.tag }}
-            type=raw,value=latest
-
-      - name: Build and push multi-arch Docker image
-        uses: docker/build-push-action@v6
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ needs.prepare.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha,scope=${{ env.PLATFORM_PAIR }}
+          cache-to: type=gha,scope=${{ env.PLATFORM_PAIR }},mode=max
+
+      - name: Export digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/digests"
+          touch "${RUNNER_TEMP}/digests/${DIGEST#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: digests-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: Publish manifest list and sign
+    runs-on: ubuntu-24.04
+    needs: [prepare, build]
+    if: always() && needs.build.result == 'success'
+    permissions:
+      contents: read
+      packages: write
+      id-token: write   # cosign keyless (Sigstore OIDC)
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata (tags)
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ needs.prepare.outputs.image }}
+          flavor: |
+            latest=false
+          tags: |
+            type=semver,pattern={{version}},value=${{ needs.prepare.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.prepare.outputs.version }}
+            type=semver,pattern={{major}},value=${{ needs.prepare.outputs.version }}
+            type=raw,value=latest,enable=${{ needs.prepare.outputs.is_latest == 'true' }}
+
+      - name: Create manifest list and push
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          IMAGE: ${{ needs.prepare.outputs.image }}
+        run: |
+          set -euo pipefail
+          mapfile -t TAG_ARGS < <(jq -r '.tags[] | "-t", .' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          mapfile -t SOURCES < <(for d in *; do printf '%s@sha256:%s\n' "$IMAGE" "$d"; done)
+          docker buildx imagetools create "${TAG_ARGS[@]}" "${SOURCES[@]}"
+
+      - name: Inspect image and resolve digest
+        id: digest
+        env:
+          IMAGE: ${{ needs.prepare.outputs.image }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "$IMAGE:$VERSION"
+          DIGEST=$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{json .Manifest}}' | jq -r .digest)
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab # v4.1.4
+
+      - name: Sign manifest list (keyless)
+        env:
+          IMAGE: ${{ needs.prepare.outputs.image }}
+          DIGEST: ${{ steps.digest.outputs.digest }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+
+      - name: Summary
+        env:
+          IMAGE: ${{ needs.prepare.outputs.image }}
+          DIGEST: ${{ steps.digest.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          {
+            echo "### Published ${IMAGE}@${DIGEST}"
+            echo '```'
+            echo "$TAGS"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

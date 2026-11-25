@@ -1,23 +1,22 @@
 #!/bin/bash
+# Default X session for xdesktop (installed as /usr/local/lib/xdesktop/xstartup).
+# ~/.vnc/xstartup execs this file by default; replace ~/.vnc/xstartup to customise.
 unset SESSION_MANAGER
 unset DBUS_SESSION_BUS_ADDRESS
 
-# Disable screensaver and power management signaling to avoid lockups inside VDI
+# No screen blanking / DPMS: the session has no password to unlock it with.
 xset s off 2>/dev/null || true
+xset s noblank 2>/dev/null || true
 xset -dpms 2>/dev/null || true
 
-# Load user X resources if present
-if [ -f "$HOME/.Xresources" ]; then
-    xrdb "$HOME/.Xresources"
+if [ -r "${HOME}/.Xresources" ]; then
+    xrdb -merge "${HOME}/.Xresources"
 fi
 
-# Apply custom wallpaper at runtime once XFCE and D-Bus have initialized
-(
-    sleep 3
-    for mon in monitor0 monitorVNC-0 monitorVirtual-1 monitorVirtual1; do
-        xfconf-query -c xfce4-desktop -p "/backdrop/screen0/${mon}/workspace0/last-image" -s "/usr/share/backgrounds/xfce/xfce-custom.png" 2>/dev/null || true
-    done
-) &
+# Clipboard sync between the VNC client and X selections (TigerVNC >= 1.10
+# also does this inside Xvnc; vncconfig keeps older viewers working).
+if command -v vncconfig >/dev/null 2>&1; then
+    vncconfig -nowin &
+fi
 
-# Start XFCE4 desktop environment
 exec startxfce4

@@ -1,22 +1,82 @@
+# xdesktop - Ubuntu 24.04 XFCE desktop in Docker, accessed via noVNC.
+#
+# Quick start:
+#   cp env.example .env      # optionally set VNC_PW, PUID/PGID, ...
+#   docker compose up -d
+#   docker compose logs xdesktop   # shows the generated password if VNC_PW is empty
+#   open https://localhost:6080
+#
+# Every value below can be overridden from .env (see env.example).
+
+name: xdesktop
+
 services:
-  vdi:
-    container_name: vdi_app
-    restart: unless-stopped
+  xdesktop:
+    image: ghcr.io/abhixops/xdesktop:${XDESKTOP_TAG:-latest}
     build:
       context: .
       dockerfile: Dockerfile
       args:
-        USERNAME: ${USERNAME:-abhishek}
-    image: ghcr.io/abhixops/xdesktop:latest
-    shm_size: "1gb"
+        XDESKTOP_USER: ${XDESKTOP_USER:-xdesktop}
+        USER_UID: ${PUID:-1000}
+        USER_GID: ${PGID:-1000}
+        INSTALL_VSCODE: ${INSTALL_VSCODE:-true}
+        INSTALL_FIREFOX: ${INSTALL_FIREFOX:-true}
+        INSTALL_DOCKER_CLI: ${INSTALL_DOCKER_CLI:-false}
+        EXTRA_PACKAGES: ${EXTRA_PACKAGES:-}
+    restart: unless-stopped
+    # Chromium/Electron apps (VS Code, Firefox) need more than Docker's 64 MB default.
+    shm_size: ${XDESKTOP_SHM_SIZE:-1gb}
     environment:
-      - VNC_PW=${VNC_PW:-vncpassword}
-      - RESOLUTION=${RESOLUTION:-1920x1080}
-      - VNC_DEPTH=${VNC_DEPTH:-24}
+      XDESKTOP_USER: ${XDESKTOP_USER:-xdesktop}
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      # Empty => a random password is generated and printed once to the logs.
+      VNC_PW: ${VNC_PW:-}
+      RESOLUTION: ${RESOLUTION:-1920x1080}
+      VNC_DEPTH: ${VNC_DEPTH:-24}
+      DISPLAY_NUM: ${DISPLAY_NUM:-1}
+      NOVNC_PORT: ${NOVNC_PORT:-6080}
+      VNC_LISTEN: ${VNC_LISTEN:-localhost}
+      NOVNC_SSL_ONLY: ${NOVNC_SSL_ONLY:-true}
+      NOVNC_CERT: ${NOVNC_CERT:-}
+      NOVNC_KEY: ${NOVNC_KEY:-}
+      ENABLE_SUDO: ${ENABLE_SUDO:-true}
+      TZ: ${TZ:-UTC}
+      VSCODE_EXTENSIONS: ${VSCODE_EXTENSIONS:-}
     ports:
-      - "5901:5901"
-      - "6080:6080"
+      # Bound to loopback by default. Do NOT set XDESKTOP_BIND=0.0.0.0 on an
+      # internet-facing host; use examples/caddy instead.
+      - "${XDESKTOP_BIND:-127.0.0.1}:${NOVNC_HOST_PORT:-6080}:${NOVNC_PORT:-6080}"
     volumes:
-      - ./projects:/home/${USERNAME:-abhishek}/Desktop/projects
-    mem_limit: "4g"
-    cpus: 2
+      - ./projects:/workspace
+      - xdesktop-home:/home
+    deploy:
+      resources:
+        limits:
+          memory: ${XDESKTOP_MEMORY:-4g}
+          cpus: "${XDESKTOP_CPUS:-2}"
+
+  # Optional web file manager for ./projects. Enable with:
+  #   docker compose --profile files up -d
+  # First run: File Browser creates the user "admin" with a RANDOM password that
+  # is printed ONCE to its logs:  docker compose logs filebrowser
+  # If you lose it, delete the filebrowser-db volume and start again.
+  # NOTE: the File Browser project was archived upstream (no further security
+  # fixes). Keep it bound to localhost and only use it on trusted machines.
+  filebrowser:
+    image: filebrowser/filebrowser:${FILEBROWSER_TAG:-latest}
+    profiles: ["files"]
+    restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
+    ports:
+      - "127.0.0.1:${FILEBROWSER_PORT:-8080}:80"
+    volumes:
+      - ./projects:/srv
+      - filebrowser-db:/database
+      - filebrowser-config:/config
+
+volumes:
+  xdesktop-home:
+  filebrowser-db:
+  filebrowser-config:

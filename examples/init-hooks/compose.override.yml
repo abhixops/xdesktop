@@ -1,0 +1,13 @@
+# Mount example init hooks.
+# Usage (from the repo root):
+#   docker compose -f docker-compose.yml -f examples/init-hooks/compose.override.yml up -d
+
+services:
+  xdesktop:
+    volumes:
+      # Root hook: runs before the desktop starts. Files are mounted one by one
+      # so any hooks shipped in the image are not hidden.
+      - ./examples/init-hooks/init.d/10-example.sh:/etc/xdesktop/init.d/10-example.sh:ro
+      # Template for the user autostart script; 10-example.sh copies it to
+      # ~/.xdesktop/autostart.sh on first run.
+      - ./examples/init-hooks/autostart.sh:/etc/xdesktop/examples/autostart.sh:ro

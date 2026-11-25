@@ -1,0 +1,20 @@
+# Build xdesktop with the Docker CLI + compose plugin and give it the host's
+# Docker socket.
+#
+# SECURITY WARNING: access to /var/run/docker.sock is equivalent to ROOT on the
+# host. Anyone who can use this desktop (or any program running in it) can
+# control every container on the host and mount the host filesystem.
+#
+# Usage (from the repo root):
+#   docker compose -f docker-compose.yml -f examples/docker-cli/compose.override.yml up -d --build
+
+services:
+  xdesktop:
+    # Local tag so the build does not overwrite the pulled upstream image.
+    image: xdesktop-local:docker-cli
+    pull_policy: build
+    build:
+      args:
+        INSTALL_DOCKER_CLI: "true"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock

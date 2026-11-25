@@ -1,0 +1,14 @@
+{
+	email {$CADDY_EMAIL}
+}
+
+{$XDESKTOP_DOMAIN} {
+	basic_auth {
+		{$BASIC_AUTH_USER} {$BASIC_AUTH_HASH}
+	}
+
+	# Plain HTTP on the private compose network (xdesktop runs with
+	# NOVNC_SSL_ONLY=false). Caddy proxies the noVNC WebSocket
+	# (/websockify) automatically; no extra configuration is needed.
+	reverse_proxy xdesktop:{$NOVNC_PORT}
+}

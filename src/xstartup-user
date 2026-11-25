@@ -1,0 +1,4 @@
+#!/bin/sh
+# Per-user VNC session script. By default it runs the image's XFCE session,
+# which keeps picking up image updates. Replace this file to customise.
+exec /usr/local/lib/xdesktop/xstartup "$@"

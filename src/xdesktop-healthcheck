@@ -1,0 +1,19 @@
+#!/bin/sh
+# Docker HEALTHCHECK: X server socket exists and noVNC answers over HTTP(S).
+set -eu
+DISPLAY_NUM="${DISPLAY_NUM:-1}"
+NOVNC_PORT="${NOVNC_PORT:-6080}"
+
+if [ ! -S "/tmp/.X11-unix/X${DISPLAY_NUM}" ]; then
+    echo "X socket /tmp/.X11-unix/X${DISPLAY_NUM} missing"
+    exit 1
+fi
+
+if curl -kfsS -o /dev/null --max-time 4 "https://127.0.0.1:${NOVNC_PORT}/vnc.html"; then
+    exit 0
+fi
+if curl -fsS -o /dev/null --max-time 4 "http://127.0.0.1:${NOVNC_PORT}/vnc.html"; then
+    exit 0
+fi
+echo "noVNC not answering on port ${NOVNC_PORT}"
+exit 1

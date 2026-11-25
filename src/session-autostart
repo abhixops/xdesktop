@@ -1,0 +1,15 @@
+#!/bin/bash
+# Runs inside the XFCE session (via /etc/xdg/autostart/xdesktop-autostart.desktop).
+set -uo pipefail
+
+# Re-assert no blanking after XFCE components have started.
+xset s off 2>/dev/null || true
+xset s noblank 2>/dev/null || true
+xset -dpms 2>/dev/null || true
+
+hook="${HOME}/.xdesktop/autostart.sh"
+if [ -f "${hook}" ] && [ -x "${hook}" ]; then
+    mkdir -p "${HOME}/.xdesktop/logs"
+    echo "[$(date -Is)] running ${hook}" >> "${HOME}/.xdesktop/logs/autostart.log"
+    "${hook}" >> "${HOME}/.xdesktop/logs/autostart.log" 2>&1 < /dev/null &
+fi
